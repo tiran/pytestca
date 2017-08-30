@@ -3,25 +3,38 @@
 #
 # Copyright (C) 2017 Christian Heimes
 
+RSABITS=2048
+PASSWORD=somepass
+
 CERTS=
 CRLS=
 
 OUT=out
-TMP=tmp
-
-CSR=$(TMP)/csr
-CADIR=$(TMP)
 CAPATH=$(OUT)/capath
+
+TMP=tmp
+CSRDIR=$(TMP)/csr
+KEYDIR=$(TMP)/key
+CERTDIR=$(TMP)/cert
+CADIR=$(TMP)
+
+# OpenSSL's CA database is not concurrency-safe.
+.NOTPARALLEL:
 
 .PHONY: all
 all: certs crls capath test
+	@echo
+	@echo "Python Test CA certs"
+	@echo "--------------------"
+	@find $(OUT) -type f | sort
 
 .PHONY: clean
 clean:
 	rm -rf $(OUT) $(TMP)
 
-# OpenSSL's CA database is not concurrency-safe.
-.NOTPARALLEL:
+.PHONY: test
+test: pythontests openssltests
+	@echo "All tests passed"
 
 $(OUT):
 	mkdir -p $@
@@ -30,127 +43,117 @@ $(CADIR):
 	mkdir -p $@
 
 # ****************************************************************
-.PRECIOUS: $(CADIR)/%/ca.key
-$(CADIR)/%/ca.key: helper.sh $(CADIR)
-	./helper.sh key $@
+.PRECIOUS: conf/%.conf
+$(CADIR)/%-ca.conf: conf/template/%-ca.conf conf/template/ca.conf | $(CADIR)
+	echo -e "# WARNING: auto-generated file. DO NOT EDIT\n" > $@
+	cat $^ >> $@
 
-$(CADIR)/%/ca.csr: $(CADIR)/%/ca.key conf/%.conf
+.PRECIOUS: $(CADIR)/%/ca.key
+$(CADIR)/%/ca.key: helper.sh
+	./helper.sh key $@ $(RSABITS)
+
+$(CADIR)/%/ca.csr: $(CADIR)/%/ca.key $(CADIR)/%.conf
 	./helper.sh csr $@ $^
 
 # ********************************
+# Root CA cert and copy as trusted cert w/o serverAuth
 ROOTCERT=$(CADIR)/root-ca/ca.crt
-CERTS+=$(OUT)/root-ca.crt $(OUT)/root-ca-noserver.crt
-CRLS+=$(OUT)/root-ca.crl
+ROOTCONF=$(CADIR)/root-ca.conf
 
-$(ROOTCERT): $(CADIR)/root-ca/ca.csr conf/root-ca.conf
+$(ROOTCERT): $(CADIR)/root-ca/ca.csr $(ROOTCONF)
 	./helper.sh sign-rootca $@ $^
 
 $(CADIR)/root-ca/index.db: $(ROOTCERT)
 
-$(OUT)/root-ca.crl: conf/root-ca.conf $(CADIR)/root-ca/index.db
+CRLS+=$(OUT)/root-ca.crl
+$(OUT)/root-ca.crl: $(ROOTCONF) $(CADIR)/root-ca/index.db | $(OUT)
 	./helper.sh crl $@ $<
 
-$(OUT)/root-ca.crt: $(ROOTCERT) $(OUT)
+CERTS+=$(OUT)/root-ca.crt
+$(OUT)/root-ca.crt: $(ROOTCERT) | $(OUT)
 	cp $< $@
 
-$(OUT)/root-ca-noserver.crt: $(ROOTCERT) $(OUT)
+CERTS+=$(OUT)/root-ca-untrustedserver.crt
+$(OUT)/root-ca-untrustedserver.crt: $(ROOTCERT) | $(OUT)
 	openssl x509 -in $< -out $@ -text -trustout -addreject serverAuth -addtrust clientAuth
 
 # ********************************
+# intermediate CA cert
 INTERMEDIATECERT=$(CADIR)/intermediate-ca/ca.crt
-CERTS+=$(OUT)/intermediate-ca.crt
-CRLS+=$(OUT)/intermediate-ca.crl
+INTERMEDIATECONF=$(CADIR)/intermediate-ca.conf
 
-$(INTERMEDIATECERT): $(CADIR)/intermediate-ca/ca.csr conf/root-ca.conf $(ROOTCERT)
+$(INTERMEDIATECERT): $(CADIR)/intermediate-ca/ca.csr $(ROOTCONF) $(ROOTCERT)
 	./helper.sh sign-ca $@ $^
 
 $(CADIR)/intermediate-ca/index.db: $(INTERMEDIATECERT)
 
-$(OUT)/intermediate-ca.crl: conf/intermediate-ca.conf $(CADIR)/intermediate-ca/index.db
+CRLS+=$(OUT)/intermediate-ca.crl
+$(OUT)/intermediate-ca.crl: $(INTERMEDIATECONF) $(CADIR)/intermediate-ca/index.db | $(OUT)
+	mkdir -p $(OUT)
 	./helper.sh crl $@ $<
 
-$(OUT)/intermediate-ca.crt: $(INTERMEDIATECERT) $(OUT)
+CERTS+=$(OUT)/intermediate-ca.crt
+$(OUT)/intermediate-ca.crt: $(INTERMEDIATECERT) | $(OUT)
 	cp $< $@
 
 # ****************************************************************
-.PRECIOUS: $(OUT)/%.key
-$(OUT)/%.key: helper.sh $(OUT)
-	./helper.sh key $@
+.PRECIOUS: $(KEYDIR)/%.key
+$(KEYDIR)/%.key: helper.sh
+	./helper.sh key $@ $(RSABITS)
 
-$(CSR)/%.csr: $(OUT)/%.key conf/%.conf
+$(CSRDIR)/%.csr: $(KEYDIR)/%.key conf/%.conf
 	./helper.sh csr $@ $^
 
-$(OUT)/%-chain.pem: $(OUT)/%.crt $(INTERMEDIATECERT)
+$(OUT)/%.key: $(KEYDIR)/%.key | $(OUT)
+	cp $< $@
+
+$(OUT)/%.passwd.key: $(KEYDIR)/%.key | $(OUT)
+	./helper.sh encrypt-key $@ $< $(PASSWORD)
+
+$(OUT)/%.crt: $(CERTDIR)/%.crt | $(OUT)
+	cp $< $@
+
+$(OUT)/%-chain.pem: $(KEYDIR)/%.key $(INTERMEDIATECERT) | $(OUT)
 	cat $^ > $@
 
-$(OUT)/%-combined.pem: $(OUT)/%.key $(OUT)/%.crt $(INTERMEDIATECERT)
+$(OUT)/%-combined.pem: $(KEYDIR)/%.key $(CERTDIR)/%.crt $(INTERMEDIATECERT) | $(OUT)
+	cat $^ > $@
+
+$(OUT)/%-combined.passwd.pem: $(OUT)/%.passwd.key $(CERTDIR)/%.crt $(INTERMEDIATECERT) | $(OUT)
 	cat $^ > $@
 
 # ********************************
-CERTS+=$(OUT)/allsans-chain.pem $(OUT)/allsans-combined.pem
+CERTS+=$(OUT)/allsans.crt $(OUT)/allsans.key
+CERTS+=$(OUT)/allsans-chain.pem
+CERTS+=$(OUT)/allsans-combined.pem $(OUT)/allsans-combined.passwd.pem
 
-$(OUT)/allsans.crt: $(CSR)/allsans.csr conf/intermediate-ca.conf $(INTERMEDIATECERT)
+$(CERTDIR)/allsans.crt: $(CSRDIR)/allsans.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
-CERTS+=$(OUT)/revoked-chain.pem $(OUT)/revoked-combined.pem
+CERTS+=$(OUT)/revoked-combined.pem
 
-$(OUT)/revoked.crt: $(CSR)/revoked.csr conf/intermediate-ca.conf $(INTERMEDIATECERT)
+$(CERTDIR)/revoked.crt: $(CSRDIR)/revoked.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
-	./helper.sh revoke $@ conf/intermediate-ca.conf
+	./helper.sh revoke $@ $(INTERMEDIATECONF)
 
 # ********************************
-CERTS+=$(OUT)/clientauth-chain.pem $(OUT)/clientauth-combined.pem
+CERTS+=$(OUT)/client-combined.pem
 
-$(OUT)/clientauth.crt: $(CSR)/clientauth.csr conf/intermediate-ca.conf $(INTERMEDIATECERT)
+$(CERTDIR)/client.crt: $(CSRDIR)/client.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsclient $@ $^
 
 # ********************************
-.PHONY: test
-test: $(CERTS) capath
-	@openssl verify -purpose sslserver \
-		-CAfile $(ROOTCERT) \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/allsans.crt
-	@openssl verify -purpose sslclient \
-		-CAfile $(ROOTCERT) \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/allsans.crt && exit 1 || echo "... EXPECTED"
-	@openssl verify -purpose sslserver \
-		-CApath $(CAPATH) -crl_check_all \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/allsans.crt
-	@openssl verify -purpose sslserver \
-		-CAfile $(OUT)/root-ca-noserver.crt \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/allsans.crt && exit 1 || echo "... EXPECTED"
+CERTS+=$(OUT)/localhost-nocn-combined.pem
 
-	@openssl verify -purpose sslserver \
-		-CAfile $(ROOTCERT) \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/revoked.crt
-	@openssl verify -purpose sslserver -CApath $(CAPATH) -crl_check_all \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/revoked.crt && exit 1 || echo "... EXPECTED"
+$(CERTDIR)/localhost-nocn.crt: $(CSRDIR)/localhost-nocn.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+	./helper.sh sign-tlsserver $@ $^
 
-	@openssl verify -purpose sslclient \
-		-CAfile $(ROOTCERT) \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/clientauth.crt
-	@openssl verify -purpose sslserver \
-		-CAfile $(ROOTCERT) \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/clientauth.crt && exit 1 || echo "... EXPECTED"
-	@openssl verify -purpose sslclient \
-		-CApath $(CAPATH) -crl_check_all \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/clientauth.crt
-	@openssl verify -purpose sslclient \
-		-CAfile $(OUT)/root-ca-noserver.crt \
-		-untrusted $(INTERMEDIATECERT) \
-		$(OUT)/clientauth.crt
+# ********************************
+CERTS+=$(OUT)/localip-nocn-combined.pem
 
-	@echo "All tests passed"
+$(CERTDIR)/localip-nocn.crt: $(CSRDIR)/localip-nocn.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
 .PHONY: capath
@@ -158,14 +161,91 @@ capath: $(ROOTCERT) $(CRLS)
 	rm -f $(CAPATH)/*
 	mkdir -p $(CAPATH)
 	cp -t $(CAPATH) $^
-	# requires OpenSSL 1.1.0+
-	openssl rehash -compat $(CAPATH)
+	# requires OpenSSL 1.1.0+, use -compat to create OpenSSL 0.9.8 hashes
+	openssl rehash $(CAPATH)
 	for linkname in $$(find $(CAPATH) -type l); do \
 		target=$$(realpath "$$linkname"); \
 		rm "$$linkname";  \
 		cp "$$target" "$$linkname"; \
 	done
 	rm $(foreach file,$^,$(CAPATH)/$(notdir $(file)))
+
+# ********************************
+.PHONY: openssltests
+openssltests: certs capath
+	@openssl verify -purpose sslserver 		\
+		-CAfile $(ROOTCERT) 				\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_hostname localhost			\
+		$(CERTDIR)/allsans.crt
+	@openssl verify -purpose sslclient 		\
+		-CAfile $(ROOTCERT) 				\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_hostname localhost			\
+		$(CERTDIR)/allsans.crt && exit 1 || echo "... EXPECTED"
+	@openssl verify -purpose sslserver 		\
+		-CApath $(CAPATH) -crl_check_all	\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_hostname localhost			\
+		$(CERTDIR)/allsans.crt
+	@openssl verify -purpose sslserver 		\
+		-CAfile $(OUT)/root-ca-untrustedserver.crt \
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_hostname localhost			\
+		$(CERTDIR)/allsans.crt && exit 1 || echo "... EXPECTED"
+	@openssl verify -purpose sslserver 		\
+		-CApath $(CAPATH) -crl_check_all	\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_hostname wronghost			\
+		$(CERTDIR)/allsans.crt && exit 1 || echo "... EXPECTED"
+
+	@openssl verify -purpose sslserver 		\
+		-CAfile $(ROOTCERT) 				\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_hostname localhost			\
+		$(CERTDIR)/revoked.crt
+	@openssl verify -purpose sslserver 		\
+		-CApath $(CAPATH) -crl_check_all 	\
+		-untrusted $(INTERMEDIATECERT) 		\
+		$(CERTDIR)/revoked.crt && exit 1 || echo "... EXPECTED"
+
+	@openssl verify -purpose sslserver 		\
+		-CAfile $(ROOTCERT) 				\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_hostname localhost			\
+		$(CERTDIR)/localhost-nocn.crt
+
+	@openssl verify -purpose sslserver 		\
+		-CAfile $(ROOTCERT) 				\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_ip 127.0.0.1				\
+		$(CERTDIR)/localip-nocn.crt
+	@openssl verify -purpose sslserver 		\
+		-CAfile $(ROOTCERT) 				\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_ip ::1						\
+		$(CERTDIR)/localip-nocn.crt
+
+	@openssl verify -purpose sslclient 		\
+		-CAfile $(ROOTCERT) 				\
+		-untrusted $(INTERMEDIATECERT) 		\
+		$(CERTDIR)/client.crt
+	@openssl verify -purpose sslserver 		\
+		-CAfile $(ROOTCERT)					\
+		-untrusted $(INTERMEDIATECERT) 		\
+		$(CERTDIR)/client.crt && exit 1 || echo "... EXPECTED"
+	@openssl verify -purpose sslclient 		\
+		-CApath $(CAPATH) -crl_check_all 	\
+		-untrusted $(INTERMEDIATECERT) 		\
+		$(CERTDIR)/client.crt
+	@openssl verify -purpose sslclient 		\
+		-CAfile $(OUT)/root-ca-untrustedserver.crt \
+		-untrusted $(INTERMEDIATECERT) 		\
+		$(CERTDIR)/client.crt
+
+.PHONY: pythontests
+pythontests: certs capath
+	python3 testca.py
 
 .PHONY: certs
 certs: $(CERTS)
