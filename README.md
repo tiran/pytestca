@@ -13,9 +13,9 @@ pysubca.crt
 Root CA and all CRLs are also available as ``capath`` directory.
 
 ```
-capath/0f352d0a.r0
-capath/215b51e6.0
-capath/215b51e6.r0
+out/capath/5be189af.r0
+out/capath/4c69e26e.r0
+out/capath/4c69e26e.0
 ```
 
 ## end entity certs
