@@ -4,7 +4,7 @@
 #
 # Copyright (C) 2017 Christian Heimes
 
-set -e
+set -ex
 
 if [ $# -lt 2 ]; then
     echo "$0 subcmd outfile"
@@ -66,6 +66,42 @@ case "$SUBCMD" in
     crl)
         # ignore %1 (index.db)
         openssl ca -batch -gencrl -config $1 | openssl crl -text -out "$OUTFILE"
+        ;;
+    capath)
+        capath="$OUTFILE"
+        rm -rf "${capath}"
+        mkdir -p "${capath}"
+        outfiles=()
+        # copy certs/crls without most of the text header
+        for name in $@; do
+            out="${capath}/$(basename ${name})"
+            outfiles+=("${out}")
+            case ${name} in
+                *.crt)
+                    grep -E -o "Subject:.*" "${name}" > "${out}"
+                    openssl x509 -in ${name} >> "${out}"
+                    ;;
+                *.crl)
+                    grep -E -o "Issuer:.*" "${name}" > "${out}"
+                    openssl crl -in ${name} >> "${out}"
+                    ;;
+                *)
+                    echo "Unsupported ${out}"
+                    exit 1
+            esac
+        done
+        # requires OpenSSL 1.1.0+, use -compat to create OpenSSL 0.9.8 hashes
+        openssl rehash "${capath}"
+        # convert symlinks to actual files
+        for linkname in $(find "${capath}" -type l); do
+		    target=$(realpath "${linkname}")
+		    rm "${linkname}"
+		    cp "${target}" "${linkname}";
+	    done
+	    # remove non-hash files
+        for name in ${outfiles[@]}; do
+            rm "${name}"
+        done
         ;;
     *)
         echo "Unsupported sub command $SUBCMD"

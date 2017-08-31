@@ -59,6 +59,11 @@ $(CADIR)/%/ca.key: helper.sh
 $(CADIR)/%/ca.csr: $(CADIR)/%/ca.key $(CADIR)/%/ca.conf
 	./helper.sh csr $@ $^
 
+# CA cert with no extra text except subject
+$(CADIR)/%/ca-notext.crt: $(CADIR)/%/ca.crt
+	grep -E -o "Subject:.*" $< > $@
+	openssl x509 -in $< >> $@
+
 # ********************************
 # Root CA cert and copy as trusted cert w/o serverAuth
 ROOTCERT=$(CADIR)/$(ROOTCA)/ca.crt
@@ -83,8 +88,9 @@ $(OUT)/$(ROOTCA)-untrustedserver.crt: $(ROOTCERT) | $(OUT)
 
 # ********************************
 # intermediate CA cert
-INTERMEDIATECERT=$(CADIR)/$(INTERMEDIATECA)/ca.crt
 INTERMEDIATECONF=$(CADIR)/$(INTERMEDIATECA)/ca.conf
+INTERMEDIATECERT=$(CADIR)/$(INTERMEDIATECA)/ca.crt
+INTERMEDIATECERTNOTEXT=$(CADIR)/$(INTERMEDIATECA)/ca-notext.crt
 
 $(INTERMEDIATECERT): $(CADIR)/$(INTERMEDIATECA)/ca.csr $(ROOTCONF) $(ROOTCERT)
 	./helper.sh sign-ca $@ $^
@@ -101,6 +107,41 @@ $(OUT)/$(INTERMEDIATECA).crt: $(INTERMEDIATECERT) | $(OUT)
 	cp $< $@
 
 # ****************************************************************
+# extra stuff
+CACERTORG=extras/cacert.crt
+BADKEY=extras/badkey.key
+BADCERT=extras/badcert.crt
+MISMATCHKEY=$(KEYDIR)/mismatch.key
+
+CERTS+=$(OUT)/cacert.crt
+$(OUT)/cacert.crt: $(CACERTORG)
+	cp $< $@
+
+.PRECIOUS: $(MISMATCHKEY)
+$(MISMATCHKEY): helper.sh
+	./helper.sh key $@ $(RSABITS)
+
+# ****************************************************************
+# Diffie-Hellmann parameters
+DHPARAM512=$(OUT)/dhparam512.pem
+DHPARAM1024=$(OUT)/dhparam1024.pem
+DHPARAM2048=$(OUT)/dhparam2048.pem
+DHPARAMS=$(DHPARAM512) $(DHPARAM1024) $(DHPARAM2048)
+
+CERTS+=$(DHPARAMS)
+
+.PHONY: dhparams
+dhparams: $(DHPARAMS)
+
+$(OUT)/dhparam%.pem: extras/dhparam%.pem
+	cp $< $@
+
+# files are pre-cached because it takes rather long to generate them.
+extras/dhparam%.pem:
+	openssl dhparam -out $@ $*
+
+# ****************************************************************
+# cert rules
 .PRECIOUS: $(KEYDIR)/%.key
 $(KEYDIR)/%.key: helper.sh
 	./helper.sh key $@ $(RSABITS)
@@ -120,13 +161,22 @@ $(OUT)/%.passwd.key: $(KEYDIR)/%.passwd.key | $(OUT)
 $(OUT)/%.crt: $(CERTDIR)/%.crt | $(OUT)
 	cp $< $@
 
-$(OUT)/%-chain.pem: $(KEYDIR)/%.key $(INTERMEDIATECERT) | $(OUT)
+$(OUT)/%-chain.pem: $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
-$(OUT)/%-combined.pem: $(KEYDIR)/%.key $(CERTDIR)/%.crt $(INTERMEDIATECERT) | $(OUT)
+$(OUT)/%-combined.pem: $(KEYDIR)/%.key $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
-$(OUT)/%-combined.passwd.pem: $(KEYDIR)/%.passwd.key $(CERTDIR)/%.crt $(INTERMEDIATECERT) | $(OUT)
+$(OUT)/%-combined.passwd.pem: $(KEYDIR)/%.passwd.key $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
+	cat $^ > $@
+
+$(OUT)/%-badcert.pem: $(KEYDIR)/%.key $(CERTDIR)/%.crt $(BADCERT) | $(OUT)
+	cat $^ > $@
+
+$(OUT)/%-badkey.pem: $(BADKEY) $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
+	cat $^ > $@
+
+$(OUT)/%-mismatchkey.pem: $(MISMATCHKEY) $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
 # ********************************
@@ -134,6 +184,9 @@ CERTS+=$(OUT)/allsans.crt $(OUT)/allsans.key
 CERTS+=$(OUT)/allsans-chain.pem
 CERTS+=$(OUT)/allsans-combined.pem
 CERTS+=$(OUT)/allsans-combined.passwd.pem
+CERTS+=$(OUT)/allsans-badcert.pem
+CERTS+=$(OUT)/allsans-badkey.pem
+CERTS+=$(OUT)/allsans-mismatchkey.pem
 
 $(CERTDIR)/allsans.crt: $(CSRDIR)/allsans.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
@@ -189,18 +242,8 @@ $(CERTDIR)/wildcards.crt: $(CSRDIR)/wildcards.csr $(INTERMEDIATECONF) $(INTERMED
 
 # ********************************
 .PHONY: capath
-capath: $(ROOTCERT) $(CRLS)
-	rm -f $(CAPATH)/*
-	mkdir -p $(CAPATH)
-	cp -t $(CAPATH) $^
-	# requires OpenSSL 1.1.0+, use -compat to create OpenSSL 0.9.8 hashes
-	openssl rehash $(CAPATH)
-	for linkname in $$(find $(CAPATH) -type l); do \
-		target=$$(realpath "$$linkname"); \
-		rm "$$linkname";  \
-		cp "$$target" "$$linkname"; \
-	done
-	rm $(foreach file,$^,$(CAPATH)/$(notdir $(file)))
+capath: $(OUT)/$(ROOTCA).crt $(CACERTORG) $(CRLS)
+	./helper.sh capath $(CAPATH) $^
 
 # ********************************
 .PHONY: openssltests

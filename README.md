@@ -3,6 +3,7 @@
 ## CA certs and CRLs
 
 ```
+cacert.crt
 pyrootca.crl
 pyrootca.crt
 pyrootca-untrustedserver.crt
@@ -13,19 +14,23 @@ pysubca.crt
 Root CA and all CRLs are also available as ``capath`` directory.
 
 ```
-out/capath/5be189af.r0
-out/capath/4c69e26e.r0
-out/capath/4c69e26e.0
+capath/5be189af.r0
+capath/4c69e26e.r0
+capath/4c69e26e.0
+capath/99d0fa06.0
 ```
 
 ## end entity certs
 
 ```
+allsans-badcert.pem
+allsans-badkey.pem
 allsans-chain.pem
 allsans-combined.passwd.pem
 allsans-combined.pem
 allsans.crt
 allsans.key
+allsans-mismatchkey.pem
 client-combined.pem
 idna2003-combined.pem
 idna2008-combined.pem
@@ -34,6 +39,14 @@ localhost-combined.pem
 localip-combined.pem
 revoked-combined.pem
 wildcards-combined.pem
+```
+
+## DH params
+
+```
+dhparam512.pem
+dhparam1024.pem
+dhparam2048.pem
 ```
 
 ## suffixes
@@ -55,4 +68,13 @@ wildcards-combined.pem
   <dd>key, cert, intermediate CA</dd>
   <dt><code>*-combined.passwd.pem</code></dt>
   <dd>encrypted key, cert, intermediate CA</dd>
+  <dt><code>*-badcert.pem</code></dt>
+  <dd>key, cert, bad intermediate CA</dd>
+  <dt><code>*-badkey.pem</code></dt>
+  <dd>bad key, cert, intermediate CA</dd>
+  <dt><code>*-badcert.pem</code></dt>
+  <dd>key, cert, bad intermediate CA</dd>
+  <dt><code>*-mismatchkey.pem</code></dt>
+  <dd>key (does not match cert), cert, intermediate CA</dd>
+
 </dl>
