@@ -28,11 +28,17 @@ function cafiles {
 }
 
 case "$SUBCMD" in
-    key)
-        openssl genrsa -out "$OUTFILE" $1
+    rsakey)
+        openssl genrsa -out "$OUTFILE" "$1"
         ;;
-    encrypt-key)
-        openssl rsa -out "$OUTFILE" -in $1 -aes128 -passout "pass:$2"
+    encrypt-rsakey)
+        openssl rsa -out "$OUTFILE" -in "$1" -aes128 -passout "pass:$2"
+        ;;
+    ecckey)
+        openssl ecparam -genkey -out "$OUTFILE" -name $1
+        ;;
+    encrypt-ecckey)
+        openssl ec -out "$OUTFILE" -in "$1" -aes128 -passout "pass:$2"
         ;;
     csr)
         openssl req -batch -new -out "$OUTFILE" -key $1 -config $2

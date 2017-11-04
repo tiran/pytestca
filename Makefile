@@ -5,6 +5,7 @@
 
 # parameters
 RSABITS=2048
+ECDSA_CURVE=prime256v1
 PASSWORD=somepass
 ROOTCA=pyrootca
 INTERMEDIATECA=pysubca
@@ -52,10 +53,6 @@ $(CADIR)/%/ca.conf: conf/template/%.conf conf/template/ca.conf
 	echo -e "# WARNING: auto-generated file. DO NOT EDIT\n" > $@
 	cat $^ >> $@
 
-.PRECIOUS: $(CADIR)/%/ca.key
-$(CADIR)/%/ca.key: helper.sh
-	./helper.sh key $@ $(RSABITS)
-
 $(CADIR)/%/ca.csr: $(CADIR)/%/ca.key $(CADIR)/%/ca.conf
 	./helper.sh csr $@ $^
 
@@ -66,8 +63,13 @@ $(CADIR)/%/ca-notext.crt: $(CADIR)/%/ca.crt
 
 # ********************************
 # Root CA cert and copy as trusted cert w/o serverAuth
-ROOTCERT=$(CADIR)/$(ROOTCA)/ca.crt
 ROOTCONF=$(CADIR)/$(ROOTCA)/ca.conf
+ROOTKEY=$(CADIR)/$(ROOTCA)/ca.key
+ROOTCERT=$(CADIR)/$(ROOTCA)/ca.crt
+
+.PRECIOUS: $(ROOTKEY)
+$(ROOTKEY): helper.sh
+	./helper.sh rsakey $@ $(RSABITS)
 
 $(ROOTCERT): $(CADIR)/$(ROOTCA)/ca.csr $(ROOTCONF)
 	./helper.sh sign-rootca $@ $^
@@ -89,8 +91,13 @@ $(OUT)/$(ROOTCA)-untrustedserver.crt: $(ROOTCERT) | $(OUT)
 # ********************************
 # intermediate CA cert
 INTERMEDIATECONF=$(CADIR)/$(INTERMEDIATECA)/ca.conf
+INTERMEDIATEKEY=$(CADIR)/$(INTERMEDIATECA)/ca.key
 INTERMEDIATECERT=$(CADIR)/$(INTERMEDIATECA)/ca.crt
 INTERMEDIATECERTNOTEXT=$(CADIR)/$(INTERMEDIATECA)/ca-notext.crt
+
+.PRECIOUS: $(INTERMEDIATEKEY)
+$(INTERMEDIATEKEY): helper.sh
+	./helper.sh rsakey $@ $(RSABITS)
 
 $(INTERMEDIATECERT): $(CADIR)/$(INTERMEDIATECA)/ca.csr $(ROOTCONF) $(ROOTCERT)
 	./helper.sh sign-ca $@ $^
@@ -119,7 +126,7 @@ $(OUT)/cacert.crt: $(CACERTORG)
 
 .PRECIOUS: $(MISMATCHKEY)
 $(MISMATCHKEY): helper.sh
-	./helper.sh key $@ $(RSABITS)
+	./helper.sh rsakey $@ $(RSABITS)
 
 # ****************************************************************
 # Diffie-Hellmann parameters
@@ -141,103 +148,137 @@ extras/dhparam%.pem:
 	openssl dhparam -out $@ $*
 
 # ****************************************************************
-# cert rules
-.PRECIOUS: $(KEYDIR)/%.key
-$(KEYDIR)/%.key: helper.sh
-	./helper.sh key $@ $(RSABITS)
+# cert rules (RSA)
+.PRECIOUS: $(KEYDIR)/%.rsa.key
+$(KEYDIR)/%.rsa.key: helper.sh
+	./helper.sh rsakey $@ $(RSABITS)
 
-$(KEYDIR)/%.passwd.key: $(KEYDIR)/%.key
-	./helper.sh encrypt-key $@ $< $(PASSWORD)
+$(KEYDIR)/%.passwd.rsa.key: $(KEYDIR)/%.rsa.key
+	./helper.sh encrypt-rsakey $@ $< $(PASSWORD)
 
-$(CSRDIR)/%.csr: $(KEYDIR)/%.key conf/%.conf
+$(CSRDIR)/%.rsa.csr: $(KEYDIR)/%.rsa.key conf/%.conf
 	./helper.sh csr $@ $^
 
-$(OUT)/%.key: $(KEYDIR)/%.key | $(OUT)
+$(OUT)/%.rsa.key: $(KEYDIR)/%.rsa.key | $(OUT)
 	cp $< $@
 
-$(OUT)/%.passwd.key: $(KEYDIR)/%.passwd.key | $(OUT)
+$(OUT)/%.passwd.rsa.key: $(KEYDIR)/%.passwd.rsa.key | $(OUT)
 	cp $< $@
 
-$(OUT)/%.crt: $(CERTDIR)/%.crt | $(OUT)
+$(OUT)/%.rsa.crt: $(CERTDIR)/%.rsa.crt | $(OUT)
 	cp $< $@
 
-$(OUT)/%-chain.pem: $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
+$(OUT)/%-chain.rsa.pem: $(CERTDIR)/%.rsa.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
-$(OUT)/%-combined.pem: $(KEYDIR)/%.key $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
+$(OUT)/%-combined.rsa.pem: $(KEYDIR)/%.rsa.key $(CERTDIR)/%.rsa.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
-$(OUT)/%-combined.passwd.pem: $(KEYDIR)/%.passwd.key $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
+$(OUT)/%-combined.passwd.rsa.pem: $(KEYDIR)/%.passwd.rsa.key $(CERTDIR)/%.rsa.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
-$(OUT)/%-badcert.pem: $(KEYDIR)/%.key $(CERTDIR)/%.crt $(BADCERT) | $(OUT)
+# cert rules (ECDSA)
+.PRECIOUS: $(KEYDIR)/%.ecc.key
+$(KEYDIR)/%.ecc.key: helper.sh
+	./helper.sh ecckey $@ $(ECDSA_CURVE)
+
+$(KEYDIR)/%.passwd.ecc.key: $(KEYDIR)/%.ecc.key
+	./helper.sh encrypt-ecckey $@ $< $(PASSWORD)
+
+$(CSRDIR)/%.ecc.csr: $(KEYDIR)/%.ecc.key conf/%.conf
+	./helper.sh csr $@ $^
+
+$(OUT)/%.ecc.key: $(KEYDIR)/%.ecc.key | $(OUT)
+	cp $< $@
+
+$(OUT)/%.passwd.ecc.key: $(KEYDIR)/%.passwd.ecc.key | $(OUT)
+	cp $< $@
+
+$(OUT)/%.ecc.crt: $(CERTDIR)/%.ecc.crt | $(OUT)
+	cp $< $@
+
+$(OUT)/%-combined.ecc.pem: $(KEYDIR)/%.ecc.key $(CERTDIR)/%.ecc.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
-$(OUT)/%-badkey.pem: $(BADKEY) $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
+$(OUT)/%-combined.passwd.ecc.pem: $(KEYDIR)/%.passwd.ecc.key $(CERTDIR)/%.ecc.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
-$(OUT)/%-mismatchkey.pem: $(MISMATCHKEY) $(CERTDIR)/%.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
+# cert rules (bad certs)
+$(OUT)/%-badcert.rsa.pem: $(KEYDIR)/%.rsa.key $(CERTDIR)/%.rsa.crt $(BADCERT) | $(OUT)
+	cat $^ > $@
+
+$(OUT)/%-badkey.rsa.pem: $(BADKEY) $(CERTDIR)/%.rsa.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
+	cat $^ > $@
+
+$(OUT)/%-mismatchkey.rsa.pem: $(MISMATCHKEY) $(CERTDIR)/%.rsa.crt $(INTERMEDIATECERTNOTEXT) | $(OUT)
 	cat $^ > $@
 
 # ********************************
-CERTS+=$(OUT)/allsans.crt $(OUT)/allsans.key
-CERTS+=$(OUT)/allsans-chain.pem
-CERTS+=$(OUT)/allsans-combined.pem
-CERTS+=$(OUT)/allsans-combined.passwd.pem
-CERTS+=$(OUT)/allsans-badcert.pem
-CERTS+=$(OUT)/allsans-badkey.pem
-CERTS+=$(OUT)/allsans-mismatchkey.pem
+CERTS+=$(OUT)/allsans.rsa.crt $(OUT)/allsans.rsa.key
+CERTS+=$(OUT)/allsans-chain.rsa.pem
+CERTS+=$(OUT)/allsans-combined.rsa.pem
+CERTS+=$(OUT)/allsans-combined.passwd.rsa.pem
+CERTS+=$(OUT)/allsans-badcert.rsa.pem
+CERTS+=$(OUT)/allsans-badkey.rsa.pem
+CERTS+=$(OUT)/allsans-mismatchkey.rsa.pem
 
-$(CERTDIR)/allsans.crt: $(CSRDIR)/allsans.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+CERTS+=$(OUT)/allsans.ecc.crt $(OUT)/allsans.ecc.key
+CERTS+=$(OUT)/allsans-combined.ecc.pem
+CERTS+=$(OUT)/allsans-combined.passwd.ecc.pem
+
+$(CERTDIR)/allsans.rsa.crt: $(CSRDIR)/allsans.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+	./helper.sh sign-tlsserver $@ $^
+
+$(CERTDIR)/allsans.ecc.crt: $(CSRDIR)/allsans.ecc.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
-CERTS+=$(OUT)/revoked-combined.pem
+CERTS+=$(OUT)/revoked-combined.rsa.pem
 
-$(CERTDIR)/revoked.crt: $(CSRDIR)/revoked.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+$(CERTDIR)/revoked.rsa.crt: $(CSRDIR)/revoked.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 	./helper.sh revoke $@ $(INTERMEDIATECONF)
 
 # ********************************
-CERTS+=$(OUT)/client-combined.pem
+CERTS+=$(OUT)/client-combined.rsa.pem
 
-$(CERTDIR)/client.crt: $(CSRDIR)/client.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+$(CERTDIR)/client.rsa.crt: $(CSRDIR)/client.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsclient $@ $^
 
 # ********************************
-CERTS+=$(OUT)/localhost-combined.pem
+CERTS+=$(OUT)/localhost-combined.rsa.pem
 
-$(CERTDIR)/localhost.crt: $(CSRDIR)/localhost.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+$(CERTDIR)/localhost.rsa.crt: $(CSRDIR)/localhost.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
-CERTS+=$(OUT)/localip-combined.pem
+CERTS+=$(OUT)/localip-combined.rsa.pem
 
-$(CERTDIR)/localip.crt: $(CSRDIR)/localip.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+$(CERTDIR)/localip.rsa.crt: $(CSRDIR)/localip.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
-CERTS+=$(OUT)/localhost-cnonly-combined.pem
+CERTS+=$(OUT)/localhost-cnonly-combined.rsa.pem
 
-$(CERTDIR)/localhost-cnonly.crt: $(CSRDIR)/localhost-cnonly.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+$(CERTDIR)/localhost-cnonly.rsa.crt: $(CSRDIR)/localhost-cnonly.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
-CERTS+=$(OUT)/idna2003-combined.pem
+CERTS+=$(OUT)/idna2003-combined.rsa.pem
 
-$(CERTDIR)/idna2003.crt: $(CSRDIR)/idna2003.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+$(CERTDIR)/idna2003.rsa.crt: $(CSRDIR)/idna2003.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
-CERTS+=$(OUT)/idna2008-combined.pem
+CERTS+=$(OUT)/idna2008-combined.rsa.pem
 
-$(CERTDIR)/idna2008.crt: $(CSRDIR)/idna2008.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+$(CERTDIR)/idna2008.rsa.crt: $(CSRDIR)/idna2008.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
-CERTS+=$(OUT)/wildcards-combined.pem
+CERTS+=$(OUT)/wildcards-combined.rsa.pem
 
-$(CERTDIR)/wildcards.crt: $(CSRDIR)/wildcards.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
+$(CERTDIR)/wildcards.rsa.crt: $(CSRDIR)/wildcards.rsa.csr $(INTERMEDIATECONF) $(INTERMEDIATECERT)
 	./helper.sh sign-tlsserver $@ $^
 
 # ********************************
@@ -252,77 +293,83 @@ openssltests: certs capath
 		-CAfile $(ROOTCERT) 				\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_hostname localhost			\
-		$(CERTDIR)/allsans.crt
+		$(CERTDIR)/allsans.rsa.crt
 	@openssl verify -purpose sslclient 		\
 		-CAfile $(ROOTCERT) 				\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_hostname localhost			\
-		$(CERTDIR)/allsans.crt && exit 1 || echo "... EXPECTED"
+		$(CERTDIR)/allsans.rsa.crt && exit 1 || echo "... EXPECTED"
 	@openssl verify -purpose sslserver 		\
 		-CApath $(CAPATH) -crl_check_all	\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_hostname localhost			\
-		$(CERTDIR)/allsans.crt
+		$(CERTDIR)/allsans.rsa.crt
 	@openssl verify -purpose sslserver 		\
 		-CAfile $(OUT)/$(ROOTCA)-untrustedserver.crt \
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_hostname localhost			\
-		$(CERTDIR)/allsans.crt && exit 1 || echo "... EXPECTED"
+		$(CERTDIR)/allsans.rsa.crt && exit 1 || echo "... EXPECTED"
 	@openssl verify -purpose sslserver 		\
 		-CApath $(CAPATH) -crl_check_all	\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_hostname wronghost			\
-		$(CERTDIR)/allsans.crt && exit 1 || echo "... EXPECTED"
+		$(CERTDIR)/allsans.rsa.crt && exit 1 || echo "... EXPECTED"
+
+	@openssl verify -purpose sslserver 		\
+		-CApath $(CAPATH) -crl_check_all	\
+		-untrusted $(INTERMEDIATECERT) 		\
+		-verify_hostname localhost			\
+		$(CERTDIR)/allsans.ecc.crt
 
 	@openssl verify -purpose sslserver 		\
 		-CAfile $(ROOTCERT) 				\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_hostname localhost			\
-		$(CERTDIR)/revoked.crt
+		$(CERTDIR)/revoked.rsa.crt
 	@openssl verify -purpose sslserver 		\
 		-CApath $(CAPATH) -crl_check_all 	\
 		-untrusted $(INTERMEDIATECERT) 		\
-		$(CERTDIR)/revoked.crt && exit 1 || echo "... EXPECTED"
+		$(CERTDIR)/revoked.rsa.crt && exit 1 || echo "... EXPECTED"
 
 	@openssl verify -purpose sslserver 		\
 		-CAfile $(ROOTCERT) 				\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_hostname localhost			\
-		$(CERTDIR)/localhost.crt
+		$(CERTDIR)/localhost.rsa.crt
 
 	@openssl verify -purpose sslserver 		\
 		-CAfile $(ROOTCERT) 				\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_hostname localhost			\
-		$(CERTDIR)/localhost-cnonly.crt
+		$(CERTDIR)/localhost-cnonly.rsa.crt
 
 	@openssl verify -purpose sslserver 		\
 		-CAfile $(ROOTCERT) 				\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_ip 127.0.0.1				\
-		$(CERTDIR)/localip.crt
+		$(CERTDIR)/localip.rsa.crt
 	@openssl verify -purpose sslserver 		\
 		-CAfile $(ROOTCERT) 				\
 		-untrusted $(INTERMEDIATECERT) 		\
 		-verify_ip ::1						\
-		$(CERTDIR)/localip.crt
+		$(CERTDIR)/localip.rsa.crt
 
 	@openssl verify -purpose sslclient 		\
 		-CAfile $(ROOTCERT) 				\
 		-untrusted $(INTERMEDIATECERT) 		\
-		$(CERTDIR)/client.crt
+		$(CERTDIR)/client.rsa.crt
 	@openssl verify -purpose sslserver 		\
 		-CAfile $(ROOTCERT)					\
 		-untrusted $(INTERMEDIATECERT) 		\
-		$(CERTDIR)/client.crt && exit 1 || echo "... EXPECTED"
+		$(CERTDIR)/client.rsa.crt && exit 1 || echo "... EXPECTED"
 	@openssl verify -purpose sslclient 		\
 		-CApath $(CAPATH) -crl_check_all 	\
 		-untrusted $(INTERMEDIATECERT) 		\
-		$(CERTDIR)/client.crt
+		$(CERTDIR)/client.rsa.crt
 	@openssl verify -purpose sslclient 		\
 		-CAfile $(OUT)/$(ROOTCA)-untrustedserver.crt \
 		-untrusted $(INTERMEDIATECERT) 		\
-		$(CERTDIR)/client.crt
+		$(CERTDIR)/client.rsa.crt
 
 .PHONY: pythontests
 pythontests: certs capath
