@@ -17,6 +17,18 @@ OUTDIR=$(dirname "$OUTFILE")
 shift 2
 mkdir -p "$OUTDIR"
 
+case "$(basename $OUTFILE)" in
+    *rsa*)
+        ALGO=RSA
+        ;;
+    *ecc*)
+        ALGO=ECC
+        ;;
+    *)
+        ALGO=
+        ;;
+esac
+
 function cafiles {
     mkdir -p "${1}/certs"
     if [ ! -f "${1}/index.db" ]; then
@@ -41,37 +53,38 @@ case "$SUBCMD" in
         openssl ec -out "$OUTFILE" -in "$1" -aes128 -passout "pass:$2"
         ;;
     csr)
-        openssl req -batch -new -out "$OUTFILE" -key $1 -config $2
+        openssl req -batch -new -out "$OUTFILE" -key $1 -config <(sed s/\@ALGO\@/$ALGO/ $2)
         ;;
     sign-rootca)
         # ignore $3
         cafiles "$OUTDIR"
         openssl ca -batch -selfsign -out "$OUTFILE" -in $1 \
-            -extensions ca_ext -config $2
+            -extensions ca_ext -config <(sed s/\@ALGO\@/$ALGO/ $2)
         ;;
     sign-ca)
         # ignore $3
         cafiles "$OUTDIR"
         openssl ca -batch -out "$OUTFILE" -in $1 \
-            -extensions ca_ext -config $2
+            -extensions ca_ext -config <(sed s/\@ALGO\@/$ALGO/ $2)
         ;;
     sign-tlsserver)
         # ignore $3
         openssl ca -batch -out "$OUTFILE" -in $1 \
-            -extensions tlsserver_ext -config $2
+            -extensions tlsserver_ext -config <(sed s/\@ALGO\@/$ALGO/ $2)
         ;;
     sign-tlsclient)
         # ignore $3
         openssl ca -batch -out "$OUTFILE" -in $1 \
-            -extensions tlsclient_ext -config $2
+            -extensions tlsclient_ext -config <(sed s/\@ALGO\@/$ALGO/ $2)
         ;;
     revoke)
-        openssl ca -batch -revoke "$OUTFILE" -config $1 \
+        openssl ca -batch -revoke "$OUTFILE" -config <(sed s/\@ALGO\@/$ALGO/ $1) \
             -crl_reason keyCompromise
         ;;
     crl)
         # ignore %1 (index.db)
-        openssl ca -batch -gencrl -config $1 | openssl crl -text -out "$OUTFILE"
+        openssl ca -batch -gencrl -config <(sed s/\@ALGO\@/$ALGO/ $1) \
+            | openssl crl -text -out "$OUTFILE"
         ;;
     capath)
         capath="$OUTFILE"
